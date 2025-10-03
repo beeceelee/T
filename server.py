@@ -1,49 +1,84 @@
 import os
 import requests
 from flask import Flask, request
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Take token from Render env var
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # set this in Render/Railway env
 API_URL = "https://www.tikwm.com/api/"
 
 app = Flask(__name__)
 bot = Bot(token=BOT_TOKEN)
 
-# Dispatcher is required to handle updates
+# Dispatcher handles updates
 dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
 
 
+# --- Handlers ---
 def start(update, context):
-    update.message.reply_text("👋 Send me a TikTok link and I’ll download it (no watermark).")
+    update.message.reply_text(
+        "👋 Send me a TikTok link and I’ll download it (no watermark)."
+    )
 
 
 def download_tiktok(update, context):
-    url = update.message.text.strip()
+    chat_type = update.message.chat.type
+    text = update.message.text.strip()
 
-    if "tiktok.com" not in url:
-        update.message.reply_text("❌ Please send a valid TikTok link.")
+    # If in a group, only respond if TikTok link
+    if chat_type in ["group", "supergroup"] and "tiktok.com" not in text:
+        return
+
+    if "tiktok.com" not in text:
+        if chat_type == "private":
+            update.message.reply_text("❌ Please send a valid TikTok link.")
         return
 
     try:
-        r = requests.post(API_URL, data={"url": url})
+        r = requests.post(API_URL, data={"url": text})
         data = r.json()
 
         if data.get("data"):
             video_url = data["data"]["play"]
+
+            # Inline buttons (no audio option)
+            buttons = [
+                [InlineKeyboardButton("🔁 Download Again", callback_data="again")],
+                [InlineKeyboardButton("ℹ️ About", callback_data="about")],
+            ]
+            reply_markup = InlineKeyboardMarkup(buttons)
+
             caption = "✅ TikTok Video (no watermark)\n\nDownloaded via: @Save4TiktokVideoBot"
-            update.message.reply_video(video=video_url, caption=caption)
+            update.message.reply_video(video=video_url, caption=caption, reply_markup=reply_markup)
         else:
             update.message.reply_text("⚠️ Couldn’t download video. Try another link.")
     except Exception as e:
         update.message.reply_text(f"⚠️ Error: {e}")
 
 
-# Register handlers
+def button_handler(update, context):
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "again":
+        query.edit_message_caption(
+            caption="🔁 Please send another TikTok link to download.",
+            reply_markup=None,
+        )
+    elif query.data == "about":
+        query.edit_message_caption(
+            caption="ℹ️ This bot downloads TikTok videos without watermark.\nMade with ❤️",
+            reply_markup=None,
+        )
+
+
+# --- Register handlers ---
 dispatcher.add_handler(CommandHandler("start", start))
 dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, download_tiktok))
+dispatcher.add_handler(CallbackQueryHandler(button_handler))
 
 
+# --- Flask Routes ---
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
